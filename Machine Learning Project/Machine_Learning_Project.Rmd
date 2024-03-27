@@ -1,0 +1,545 @@
+---
+title: "Final Project"
+author: "PSTAT 131/231"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, messweather_in_usd = FALSE,
+                      warning = FALSE)
+```
+
+
+
+```{r, echo=FALSE}
+library(tidymodels)
+library(ISLR)
+library(ISLR2)
+library(tidyverse)
+library(glmnet)
+library(modeldata)
+library(ggthemes)
+library(xgboost)
+library(ranger)
+library(vip)
+library(tidymodels)
+library(janitor) # for naming conventions
+library(naniar) # to assess missing data patterns
+library(corrplot) # for a correlation plot
+library(patchwork) # for putting plots together
+library(rpart)
+library(rpart.plot)
+library(themis)
+library(kknn)
+library(discrim)
+library(parsnip)
+tidymodels_prefer()
+```
+### Predciting Weather Condition
+
+## Using Machine Learning Models and Kaggle Data to Predict the weather condition in Seattle
+
+# Tyler Rogers
+# UCSB Winter 2024
+
+### Introduction
+
+The purpose of this project is to build a machine learning model to predict the weather condition on any given day in Seattle. I will be using data from Kaggle to develop my model. Throughout my project, I will be implementing multiple machine learning techniques to obtain the most accurate model for this multiclass classification problem.
+
+## Project Roadmap
+
+Let's discuss how we will build our multiclass classification model. We will begin by checking for missingness and cleaning our data. We will remove any predictor variables that are not needed. We will then perform exploratory data analysis to better understand our variables. We will use this to predict the weather conditions in Seattle.  We will then perform a training/testing split on our data, make a recipe, and set folds for the 5-fold cross validation. Elastic Net, K-Nearest Neighbors, Linear Discriminant Analysis, and Random Forest models will be all used to model the training data when we finish the setup. Once we have the results from each model, we will select the one that performed the best and fit it to our test dataset to discover how effective our model really is at predicting the weather conditions in Seattle.
+
+## Citation
+
+R, A. (2022, January 17). Weather prediction. Kaggle. https://www.kaggle.com/datasets/ananthr1/weather-prediction/data 
+
+
+### Exploratory Data Analysis
+
+We will first load the data from kaggle and check to see if any tidying or cleaning of the data is needed.
+
+## Loading and Exploring the Data
+
+```{r}
+# loading the data
+seattle_weather <- read.csv("/Users/luispacheco/Downloads/pstat131turnin/seattle-weather.csv") 
+```
+
+We can check the data quickly to see if there is any missingness.
+
+```{r}
+# checking for missingness
+seattle_weather %>% 
+  vis_miss()
+```
+
+There is no missing data.
+
+We will now check the dimensions of our data and see how many observtions we have.
+
+```{r}
+# checking dimensions of data
+seattle_weather %>% 
+  dim()
+```
+
+We have 1461 observations and 6 variables. We will then change our response variable to be a factor.
+
+```{r}
+ # converting response variable to a factor
+seattle_weather <- seattle_weather %>% 
+  mutate(weather = factor(weather))
+```
+
+Lets take a quick look at our data 
+
+```{r}
+seattle_weather %>% head()
+```
+
+## Describing our Predictors 
+
+* 'date': YYYY-MM-DD
+* 'precipitation': All forms in which water falls on the land surface and open water bodies as rain, sleet, snow, hail, or drizzle
+* 'temp_max': Maximum Temperature
+* 'temp_min': Minimum Temperature
+* 'wind': Wind Speed
+* 'weather': output (drizzle, rain, snow, fog, sun)
+
+## Visual EDA
+
+Let's take a look at the distribution of variables. We’ll create an output variable plot as well a correlation matrix to identify potential correlations between our predictor variables. We will also take a look at visualization plots to see the effect that certain variables of interest have on our response variable.
+
+# Weather Conditions Distribution
+
+```{r}
+seattle_weather %>% 
+  ggplot(aes(x = weather)) +
+  geom_bar()
+```
+We can see from the plot that a majority of the time, the weather conditions in Seattle are typically either raining or sunny.
+
+## Variable Correlation Plot
+
+```{r}
+seattle_weather %>%
+  select(is.numeric) %>%
+  cor() %>%
+  corrplot()
+```
+We see a strong positive correlation between the maximum and minimum temperature, which is to be expected. Wind and precipitation has a small positive correlation. We also see a very small negative correlation between precipitation with temp_min and temp_max. There's also a slight negative correlation between wind with temp_min and temp_max as well.
+
+# Precipitation
+
+What if we do a boxplot of precipitation?
+
+```{r}
+ggplot(seattle_weather, aes(precipitation)) +  
+  geom_boxplot(fill = "#FB4F14")
+```
+
+# Wind
+
+We can create a boxplot to see the difference in weather condition by the wind.
+
+```{r}
+ggplot(seattle_weather, aes(wind)) + 
+  geom_bar(aes(fill = weather))
+```
+# Temperature
+
+Here our two more boxplots showing how the weather differs based on temperature.
+
+```{r}
+ggplot(seattle_weather, aes(temp_max)) + 
+  geom_bar(aes(fill = weather))
+
+ggplot(seattle_weather, aes(temp_min)) + 
+  geom_bar(aes(fill = weather))
+```
+
+
+### Setting up Models
+
+Now that we have a better understanding of how our variables affect the weather condition, we can begin to build our models. We will create our training and testing sets, recipe, and establish cross validation to help with our models.
+
+## Train/Test Split
+
+Before we start to do any model building we must first split our data into a training and testing set. I choose a 75/25 split. We will train our model using the training set and then access the performance of our model on the unseen testing set. We also set a random seed to ensure the training and testing split is the same every time. We will also stratify on our response variable, 'weather'. 
+
+## Data Split
+
+```{r}
+set.seed(3435)
+
+weather_split <- initial_split(seattle_weather, prop = .75, strata = weather)
+
+weather_train <- training(weather_split)
+weather_test <- testing(weather_split)
+```
+
+Dimensions of our training and testing sets.
+
+```{r}
+weather_train %>% dim()
+weather_test %>% dim()
+```
+
+We now have 1095 observations in the training dataset and 366 observations in the testing dataset.
+
+## Recipe Creation
+
+We will create one recipe for all of our models. We are using our variables to come up with a recipe to help us predict weather conditions. We will be using 4 of our 5 predictor variables in our recipe. We will be removing the variable 'date' as this won't have an effect on our model. We will also dummy all nominal predictors center and scale our data.
+
+```{r}
+weather_recipe <- recipe(weather ~ ., data = weather_train) %>% 
+  step_rm(date) %>% 
+  step_dummy(all_nominal_predictors()) %>%
+  step_center(all_predictors()) %>% 
+  step_normalize(all_predictors())
+   
+
+prep(weather_recipe) %>% bake(new_data = weather_train)
+```
+
+## K-Fold Cross-Validation
+
+We will stratify our cross validation on our response variable, 'weather', and use 5 folds to perform stratifies cross validation.
+
+```{r}
+weather_folds <- vfold_cv(weather_train, v = 5, strata = "weather")
+```
+
+Because building models take so much computing time, I saved the results to an RDA file so I can go back anytime later and load it.
+
+```{r}
+save(weather_folds, weather_recipe, weather_train, weather_test, file = "/Users/luispacheco/Downloads/pstat131turnin/rda.rda")
+```
+
+### Model Building
+
+We will now begin to build our models. We fit four different models. Those models being Elastic Net, K-Nearest Neighbor, Linear Discriminant Analysis and Random Forest. Our dataset is relatively small so our models didn't take too long to run. Our random forest, which will be useful for our multiclass classification problem will take the longest to run.
+
+## Performance Metric 
+
+'accuracy' and 'roc_auc' are our most useful tools to evaluate performance. We will be using 'roc_auc' to evaluate the performance of our models. 'roc auc' calculates the area under the curve (AUC) for the receiver operating characteristic (ROC) curve.
+
+## Model Building Process
+
+Almost all our models were built with the same process
+
+1. Start specifying the model type, set the mode to "classification" and then set the engine. 
+
+2. Set up the workflow by adding the model and our recipe we created.
+
+3. Set up our tuning grid, specifying which parameters we want to tune, set the ranges and levels
+
+4. Tune the model
+
+5. Select the most accurate model from our tuning grid and finalize the workflow with these parameters. 
+
+6. Fit that model with our workflow to our training dataset.
+
+7. Save our results to an RDA file so we do not have to spend time running it over and over again.
+
+```{r}
+weather_en_mod <- multinom_reg(penalty = tune(),
+                     mixture = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+
+weather_en_wkflow <- workflow() %>% 
+  add_model(weather_en_mod) %>% 
+  add_recipe(weather_recipe)
+
+
+weather_knn_mod <- nearest_neighbor(neighbors = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("kknn")
+
+weather_knn_wkflow <- workflow() %>% 
+  add_model(weather_knn_mod) %>% 
+  add_recipe(weather_recipe)
+
+
+weather_lda_mod <- discrim_linear() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+weather_lda_wkflow <- workflow() %>%
+  add_model(weather_lda_mod) %>%
+  add_recipe(weather_recipe)
+
+
+weather_rf_mod <- rand_forest(mtry = tune(), 
+                           trees = tune(), 
+                           min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("classification")
+
+weather_rf_wkflow <- workflow() %>% 
+  add_model(weather_rf_mod) %>% 
+  add_recipe(weather_recipe)
+```
+
+```{r}
+en_grid <- grid_regular(penalty(range = c(0.01, 3),
+                                     trans = identity_trans()),
+                        mixture(range = c(0, 1)),
+                             levels = 10)
+
+knn_grid <- grid_regular(neighbors(range = c(1,10)), levels = 10)
+
+rf_grid <- grid_regular(mtry(range = c(1, 4)), 
+                        trees(range = c(200, 600)),
+                        min_n(range = c(10, 20)),
+                        levels = 4)
+```
+
+# Fit models
+
+```{r}
+weather_en_tune_res <- tune_grid(
+  object = weather_en_wkflow,
+  resamples = weather_folds,
+  grid = en_grid
+)
+
+weather_knn_tune_res <- tune_grid(
+  object = weather_knn_wkflow,
+  resamples = weather_folds,
+  grid = knn_grid
+)
+
+weather_rf_tune_res <- tune_grid(
+  object = weather_rf_wkflow,
+  resamples = weather_folds,
+  grid = rf_grid
+)
+```
+
+
+```{r}
+save(weather_en_tune_res, file = "/Users/luispacheco/Downloads/pstat131turnin/en.rda")
+
+save(weather_knn_tune_res, file = "/Users/luispacheco/Downloads/pstat131turnin/knn.rda")
+
+save(weather_rf_tune_res, file = "/Users/luispacheco/Downloads/pstat131turnin/rf.rda")
+
+```
+
+
+### Model Results
+
+We now have our completed models saved. We will load in the saved results and begin analyzing their perfomance.
+
+```{r}
+load("/Users/luispacheco/Downloads/pstat131turnin/en.rda")
+
+load("/Users/luispacheco/Downloads/pstat131turnin/knn.rda")
+
+load("/Users/luispacheco/Downloads/pstat131turnin/rf.rda")
+```
+
+```{r, echo=FALSE}
+show_best(weather_en_tune_res, n = 1)
+best_en_mod <- select_best(weather_en_tune_res)
+
+show_best(weather_knn_tune_res, n = 1)
+best_knn_mod <- select_best(weather_knn_tune_res)
+
+show_best(weather_rf_tune_res, n = 1)
+best_rf_mod <- select_best(weather_rf_tune_res)
+
+final_weather_en_model <- finalize_workflow(weather_en_wkflow, best_en_mod)
+final_weather_en_model <- fit(final_weather_en_model, weather_train)
+
+final_weather_knn_model <- finalize_workflow(weather_knn_wkflow, best_knn_mod)
+final_weather_knn_model <- fit(final_weather_knn_model, weather_train)
+
+final_weather_lda_model <- fit(weather_lda_wkflow, weather_train)
+
+final_weather_rf_model <- finalize_workflow(weather_rf_wkflow, best_rf_mod)
+final_weather_rf_model <- fit(final_weather_rf_model, weather_train)
+```
+
+```{r, echo=FALSE}
+final_weather_en_model_train <- augment(final_weather_en_model, 
+                               weather_train) %>% 
+  select(weather, starts_with(".pred"))
+
+final_weather_knn_model_train <- augment(final_weather_knn_model, 
+                               weather_train) %>% 
+  select(weather, starts_with(".pred"))
+
+final_weather_lda_model_train <- augment(final_weather_lda_model, 
+                               weather_train) %>% 
+  select(weather, starts_with(".pred"))
+
+final_weather_rf_model_train <- augment(final_weather_rf_model, 
+                               weather_train) %>% 
+  select(weather, starts_with(".pred"))
+```
+
+## Visualize Results 
+
+We will use the 'autoplot' function in r to help us visualize the effects that the change in certain parameters has on the 'roc_auc'.
+
+# Elastic Net
+
+Elastic net is a combination of variants of linear regression, ridge and lasso. Ridge utilizes an L2 penalty and lasso uses an L1 penalty. With elastic net, you don't have to choose between these two models, because elastic net uses both the L2 and the L1 penalty. In our elastic net model we are tuning two parameters:
+
+* 'penalty': A non-negative number representing the total amount of regularization 
+* 'mixture': 	A number between zero and one (inclusive) giving the proportion of L1 regularization (i.e. lasso) in the model
+
+Our best models all had a penatly of 0.01, the value for mixture varied throughout our best models
+
+```{r}
+autoplot(weather_en_tune_res) + theme_minimal()
+```
+
+# K- Nearest Neighbors
+
+K-nearest neighborsis a non-parametric, supervised learning classifier, which uses proximity to make classifications about the grouping of an individual data point. In our KNN model we are tuning 1 parameter
+
+* 'neighbors': 	
+A single integer for the number of neighbors to consider
+
+Our best models had a higher value for the neighbor parameter.
+
+```{r}
+autoplot(weather_knn_tune_res) + theme_minimal()
+```
+
+# Random Forest 
+
+A random forest model consists multiple decision trees that are created using different random subsets of the data and features. Each decision tree is like an expert, providing its opinion on how to classify the data. Predictions are made by calculating the prediction for each decision tree, then taking the most popular result. In our random forest model we are tuning three different hyperparameters.
+
+* 'mtry': An integer for the number of predictors that will be randomly sampled at each split when creating the tree models.
+
+* 'trees': An integer for the number of trees contained in the ensemble.
+
+* 'min_n': An integer for the minimum number of data points in a node that are required for the node to be split further.
+
+A 'mtry' value of 3 or 2 seems to have the best results. 333 'trees' was consistent among our best models and the best 'min_n' varies.
+
+Our random forest model performed the best.
+
+```{r}
+autoplot(weather_rf_tune_res) + theme_minimal()
+```
+
+# Model Accuracies
+
+We will create a tibble to display our four models estimated 'roc_auc' value
+
+```{r}
+en_auc <- roc_auc(final_weather_en_model_train, truth = weather, 
+         .pred_drizzle:.pred_sun) %>% select(.estimate)
+
+knn_auc <- roc_auc(final_weather_knn_model_train, truth = weather, 
+         .pred_drizzle:.pred_sun) %>% select(.estimate)
+
+lda_auc <- roc_auc(final_weather_lda_model_train, truth = weather, 
+         .pred_drizzle:.pred_sun) %>% select(.estimate)
+
+rf_auc <- roc_auc(final_weather_rf_model_train, truth = weather, 
+         .pred_drizzle:.pred_sun) %>% select(.estimate)
+
+weather_auc <- c(en_auc$.estimate,
+                 knn_auc$.estimate,
+                 lda_auc$.estimate,
+                 rf_auc$.estimate)
+
+weather_names <- c("Elastic Net",
+                   "KNN",
+                   "LDA",
+                   "Random Forest")
+
+weather_results <- tibble(Model = weather_names,
+                             ROC_AUC = weather_auc)
+
+weather_results <- weather_results %>% 
+  dplyr::arrange(-weather_auc)
+
+weather_results
+```
+
+From the tibble we created, we can see our random forest model performed the best with a 'roc_auc' score of 0.9849, our KNN model was second with a score of 0.9666 and our Elastic net model was third with a score of 0.8146. This is fitted to the training data, so we will test our models performance on our testing data. We will be using our Random Forest model for this as well as our KNN model.
+
+### Results From Our Best Models
+
+We now will use our best model, our Random Forest model to access it's scored on the testing data. We will also include our 2nd best model the KNN model.
+
+## Random Forest Model
+
+We want to examine how good our best model is on our testing data.
+
+```{r}
+show_best(weather_rf_tune_res, n = 1)
+best_rf_mod <- select_best(weather_rf_tune_res)
+```
+We will now fit this model to our testing data.
+
+# Final ROC AUC Results
+
+lets take a look at our 'roc_auc' score fitted to our testing data.
+
+```{r}
+final_weather_rf_model_test <- augment(final_weather_rf_model, 
+                               weather_test) %>% 
+  select(weather, starts_with(".pred"))
+
+roc_auc(final_weather_rf_model_test, truth = weather, 
+         .pred_drizzle:.pred_sun)
+```
+
+Our model performed a 'roc_auc' score of 0.8585 on our testing data. Our model did pretty well at predicting the weather conditions
+
+# ROC Curve
+
+To visualize our AUC score, we will plot our ROC curve. The higher up and left the curve is, the better the model’s AUC will be. We can see our model performed well conforming our computed AUC score above.
+
+```{r}
+roc_curve(final_weather_rf_model_test, truth = weather, .pred_drizzle:.pred_sun) %>% 
+  autoplot()
+```
+
+## K-Nearest Neighbor
+
+We will now assess how well our KNN model does on the testing data. Our model performed a 'roc_auc' score of 0.7478 on our testing data. Our model again did pretty well at predicting the weather conditions but not as well as our Random Forest Model. Our 'roc_auc' is a lot lower when fitted to our testing data though compared to our training data. This is most likely due to overfitting.
+
+
+```{r}
+final_weather_knn_model_test <- augment(final_weather_knn_model, 
+                               weather_test) %>% 
+  select(weather, starts_with(".pred"))
+
+roc_auc(final_weather_knn_model_test, truth = weather, 
+         .pred_drizzle:.pred_sun)
+
+```
+
+To visualize this result we will again plot our ROC curve
+
+```{r}
+roc_curve(final_weather_knn_model_test, truth = weather, .pred_drizzle:.pred_sun) %>% 
+  autoplot()
+```
+
+### Conclusion 
+
+Throughout this project, we have researched, explored, and analyzed our data and its variables in order to build and test a model that could predict the weather conditions in Seattle. We found that our best model was a Random Forest Model. 
+
+One of my biggest takeaways from this project is that these models can take a lot of computing power and time to be created. If more computing power was available we could possibly obtain an even better model. 
+
+Overall, this project provided me the opportunity to better my skills and gain experience with machine learning.
+
+
