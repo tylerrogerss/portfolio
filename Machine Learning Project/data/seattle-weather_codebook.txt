@@ -1,6 +1,0 @@
-date: YYYY-MM-DD
-precipitation: All forms in which water falls on the land surface and open water bodies as rain, sleet, snow, hail, or drizzle
-temp_max: Maximum Temperature
-temp_min: Minimum Temperature
-wind: Wind Speed
-weather: output (drizzle, rain, snow, fog, sun)
