@@ -1,0 +1,250 @@
+---
+title: "Part 3 Project"
+author: "Luis Pacheco & Tyler Rogers"
+date: "2023-12-04"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  '': default
+---
+
+
+```{r, echo=FALSE, results = FALSE}
+library(tidyverse)
+library(modelr)
+library(faraway)
+library(skimr)
+library(GGally)
+library(leaps)
+library(tidymodels)
+library(stats)
+```
+
+
+
+```{r, echo=FALSE}
+student_mat <- read.csv('/users/luispacheco/downloads/student+performance/student/student-mat.csv' , sep = ";")
+```
+
+
+```{r, echo=FALSE}
+skim(student_mat)
+summary(student_mat)
+head(student_mat)
+```
+The dataframe student-mat contains data for students in a Math course. The data contains 32 variables and and 395 observations(students). Our variables of interest are our response variable, G3(students final grade), activities and higher.
+
+```{r}
+response_variables <- c("G1","G2","G3")
+explanatory_variables <- c("higher","goout", "absences", "studytime")
+selected_variables <- c(response_variables, explanatory_variables)
+```
+
+
+```{r, echo=FALSE}
+ggpairs(student_mat, columns = selected_variables ,mapping = aes(color = higher))
+```
+
+```{r}
+lm(G3 ~ higher + absences + absences:higher, data = student_mat) %>% summary() %>% coef()
+```
+
+It is estimated that the association between mean final grade and absences decreases by .07 points per absence for students who seek to continue with higher education compared to those students who do not seek to continue with higher education.
+
+However, the data does not provide evidence that the relationship between mean final grade and absences depends on higher education response.
+
+```{r}
+model_reference1 <- regsubsets(G3 ~ higher + absences + goout + studytime, data = student_mat, method =  'seqrep', nbest = 1, nvmax = 5)
+
+model_reference2 <- regsubsets(G3 ~ higher + absences + goout + studytime + absences:higher , data = student_mat, method =  'seqrep', nbest = 1, nvmax = 5)
+
+```
+
+
+```{r}
+ggplot(student_mat, mapping = aes(x= absences  , y = G3)) + geom_point() +labs() + geom_smooth(method ="lm", formula = 'y ~ x', raw = F)
+
+
+```
+
+```{r}
+model_test <- lm(G3 ~ exp(absences) , data = student_mat) 
+p_caseinf <- augment(model_test, student_mat) %>% mutate(obs_index = row_number()) %>% ggplot(aes(x = obs_index, y= .resid)) + geom_point()
+p_caseinf
+```
+
+
+```{r}
+augment(model_test, student_mat) %>% pivot_longer(cols=c(.fitted, absences)) %>% ggplot(aes(y= .resid, x = value)) + facet_wrap(~name, scales = 'free_x') +geom_point() + geom_hline(aes(yintercept = 0)) + geom_smooth(method = 'loess', formula = 'y ~ x', se = F, span = 1)
+```
+
+```{r}
+p_caseinf2 <- augment(model_test, student_mat) %>% mutate(obs_index = row_number()) %>% pivot_longer(cols = c(.resid, .hat, .cooksd)) %>% ggplot(aes(x = obs_index, y = value)) + facet_wrap(~ name, scales = 'free') +geom_point() + geom_hline(aes(yintercept = 0))
+
+p_caseinf2
+```
+
+
+```{r}
+unusual_obs <- augment(model_test, student_mat) %>% mutate(obs_index = row_number()) %>% pivot_longer(cols=c(.resid, .cooksd, .hat)) %>% group_by(name) %>% slice_max(order_by = abs(value), n=2) %>% ungroup()
+
+p_caseinf2 + geom_point(data = unusual_obs, color = 'red')
+
+
+```
+```{r}
+unusual_obs_case <- unusual_obs %>% rename(case = name)
+
+p_scatter + geom_point(data = unusual_obs_case, aes(color = case, shape = case), size = 3, alpha = .5)
+```
+
+```{r}
+unusual_idx <- augment(model_test, student_mat) %>% mutate(idx = row_number()) %>% slice_max(order_by = abs(.resid), n=2) %>% pull(idx)
+
+model_test_unusual <- lm(G3 ~ exp(absences), data = student_mat[-unusual_idx,])
+
+summary(model_test_unusual)
+```
+
+
+
+```{r}
+p_scatter <- student_mat %>% pivot_longer(cols = c(absences, age)) %>% ggplot(aes(x = value, y = G3)) + facet_wrap(~ name , scales = 'free_x') + geom_point()
+
+p_scatter
+```
+
+
+
+I see model_sig has some coefficients with p value not less than .05, let's see what happens when I remove these coefficients.
+```{r}
+model_chosen <- lm( log1p(G3) ~ sqrt(absences) + log1p(age) + romantic + absences:romantic + absences:age, data = student_mat)
+augment(model_chosen, student_mat) %>% mutate(obs_index = row_number()) %>% ggplot(aes(x = obs_index, y = .resid)) + geom_point() + geom_hline(aes(yintercept = 0))
+summary(model_chosen)
+```
+```{r}
+p_chosen <- augment(model_chosen, student_mat) %>% mutate(obs_index = row_number()) %>% pivot_longer(cols = c(.fitted, age, absences)) %>% ggplot(aes(x = value, y = .resid)) + facet_wrap(~ name, scales = 'free') + geom_point() + geom_hline(aes(yintercept = 0)) + geom_smooth(method = 'loess', formula = 'y ~ x', se = F, span = 1)
+
+p_chosen
+```
+now we pick our unusual observations based on our model.
+
+```{r}
+unusual_idx_chosen <- augment(model_chosen, student_mat) %>% mutate(idx = row_number()) %>% slice_max(order_by = abs(.resid), n=5) %>% pull(idx)
+
+
+```
+
+
+```{r}
+model_chosen_unusual <- lm(G3 ~ log1p(age) + I(1/(absences+1)) + romantic + absences:romantic + absences:age + higher:romantic + goout + Medu + Dalc, data = student_mat[-unusual_idx_chosen, ])
+summary(model_chosen_unusual)
+
+```
+
+```{r}
+p_chosen_unusual <- augment(model_chosen_unusual, student_mat[-unusual_idx_chosen, ]) %>% mutate(obs_index = row_number()) %>% pivot_longer(cols = c(.fitted, absences, Dalc)) %>% ggplot(aes(x = value, y = .resid)) + facet_wrap(~ name, scales = 'free_x') + geom_hline(aes(yintercept = 0)) + geom_point() + geom_smooth(method = 'loess' , formula = 'y ~ x', se = F, span = 1)
+
+p_chosen_unusual
+```
+Here we check for normality
+```{r}
+augment(model_chosen_unusual, student_mat[-unusual_idx_chosen, ]) %>% ggplot(aes(sample = .resid)) + geom_qq() + geom_qq_line()
+```
+
+Now we will create prediction intervals and bands.
+
+```{r}
+data_grid(student_mat, absences = absences) %>% head()
+
+```
+
+
+```{r}
+student_mat[-unusual_idx_chosen, ] %>% data_grid(absences = absences, .model = model_chosen_unusual) %>% add_predictions(model = model_chosen_unusual) %>% head()
+```
+
+```{r}
+pred_df_student <-student_mat[-unusual_idx_chosen,] %>% data_grid(absences = absences, .model = model_chosen_unusual) %>% add_predictions(model = model_chosen_unusual)
+
+p_scatter_absences <- student_mat[-unusual_idx_chosen, ] %>% ggplot(aes(x = absences, y = G3)) + geom_point()
+
+p_scatter_absences + geom_path(aes(y = pred), data = pred_df_student)
+
+
+```
+
+Now we will add the plot with both geom_path and geom_smooth
+```{r}
+p_scatter_absences + geom_path(aes(y = pred), data = pred_df_student, color = 'red', linetype = 'solid') + geom_smooth(aes(y = G3), method = 'loess', formula = 'y ~ 1/x', data = student_mat[-unusual_idx_chosen, ], color = 'blue', linetype = 'dashed')
+```
+Next we will add confidence bands
+```{r}
+pred_df_student_ci <- pred_df_student %>% cbind(ci = predict(model_chosen_unusual, newdata = pred_df_student, interval = 'confidence', level = .95))
+
+pred_df_student_ci %>% head()
+```
+
+```{r}
+p_scatter_absences + geom_path(aes(y = pred), data = pred_df_student, color = 'red') + geom_ribbon(aes(ymin = ci.lwr, ymax = ci.upr, y = ci.fit), data = pred_df_student_ci, fill = 'red', alpha = .3)
+```
+Now let's see how this matches with the geom_smooth error
+
+```{r}
+p_scatter_absences + geom_path(aes(y = pred), data = pred_df_student, color = 'red') + geom_ribbon(aes(ymin = ci.lwr, ymax = ci.upr, y = ci.fit), data = pred_df_student_ci, fill = 'red', alpha = .2) + geom_smooth(method = 'lm', formula = 'y ~ poly(x,2)', se = T, fill = 'blue', alpha = .2, linetype = 'dotdash')
+```
+
+
+
+```{r}
+#tidy_leaps(model_reference1)
+#tidy_leaps(model_reference2)
+```
+
+
+```{r}
+model_null = lm(G3 ~ 1, data=student_mat)
+model_full = lm(G3 ~ ., data=student_mat)
+anova(model_full, model_null)
+```
+Based on this anova test, we can see that the nested F-test returned a p value of 2.2e-16, hence, we have enough data to conclude that the full model is a better model than the one without any coefficients.  This test is essentially stating that the predictable variables included in the full model are significant as opposed to having no predictor variables at all.
+
+```{r}
+stats::step(model_full, direction='backward')
+```
+
+
+
+```{r}
+stats::step(model_null, direction='forward', scope=list(upper=model_full,lower= model_null))
+```
+
+
+
+We used forward selection to determine which variables to add, in our case the variables which stood out as being of significance were, "famrel", "absences"  "age", "activities" , "romantic" and "School". G1 and G2 were ommited as they are also response variables
+
+```{r}
+model_sig <- lm(G3 ~ poly(famrel, 2) + absences + age + activities + romantic + school, data=student_mat)
+summary(model_sig)
+
+```
+
+
+
+```{r}
+augment(model_sig, student_mat) %>% pivot_longer(cols=c(.fitted, age, absences)) %>% ggplot(aes(y=.resid, x=value)) + facet_wrap(~ name, scales="free_x") + geom_point() + geom_hline(aes(yintercept=0)) + geom_smooth(method ="loess", formula = 'y ~ x', se = F, span = 2)
+```
+```{r}
+model_log <- lm(log1p(G3) ~ famrel + absences + age + activities + romantic + school, data= student_mat)
+augment(model_log, student_mat) %>% pivot_longer(cols=c(.fitted, age, famrel)) %>% ggplot(aes(y=.resid, x=value)) + facet_wrap(~ name, scales="free") + geom_point() + geom_hline(aes(yintercept=0)) + geom_smooth(method ="loess", formula = 'y ~ x', se = F, span = 2)
+```
+
+Here we performed a log transformation on the response variable G3, since some values of G3 were observed at 0, we did a log1p transformation which essentially takes log(1 + x) where x is our G3 variable.
+
+```{r}
+summary(model_reference1)
+summary(model_reference2)
+```
+
+
+ Based on the R squared and R squared adjusted we chose model_reference1 as our linear model and determined the order of our significant variables : higher, goout, studytime.
